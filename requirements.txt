@@ -1,0 +1,10 @@
+numpy
+pandas
+yfinance
+tensorflow
+scikit-learn
+statsmodels
+matplotlib
+MetaTrader5
+notebook
+nbformat
