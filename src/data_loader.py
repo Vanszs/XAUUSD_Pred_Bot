@@ -1,8 +1,13 @@
+import platform
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 import os
+
+def is_windows():
+    """Check if running on Windows (not WSL)"""
+    return platform.system() == 'Windows'
 
 class DataLoader:
     def __init__(self, symbol='GC=F', interval='1h', period='1y', data_path='data/gold_data.csv'):
@@ -12,15 +17,24 @@ class DataLoader:
         self.data_path = data_path
         self.scaler = MinMaxScaler(feature_range=(0, 1))
 
-    def fetch_data(self, force_download=False, source='mt5'):
+    def fetch_data(self, force_download=False, source='auto'):
         """
         Fetch data.
-        source: 'mt5' or 'yfinance'
+        source: 'auto' (platform detection), 'mt5', or 'yfinance'
         """
         if not force_download and os.path.exists(self.data_path):
             print(f"Loading data from {self.data_path}")
             df = pd.read_csv(self.data_path, index_col=0, parse_dates=True)
             return df
+
+        # Auto-detect platform
+        if source == 'auto':
+            if is_windows():
+                print("[Platform] Windows detected -> using MetaTrader5")
+                source = 'mt5'
+            else:
+                print("[Platform] Linux/WSL detected -> using Yahoo Finance")
+                source = 'yfinance'
 
         if source == 'mt5':
             return self._fetch_from_mt5()
@@ -79,25 +93,79 @@ class DataLoader:
         # Map symbol if needed (MT5 "XAUUSD" -> YF "GC=F")
         yf_symbol = "GC=F" if "XAU" in self.symbol else self.symbol
         
-        df = yf.download(yf_symbol, interval=self.interval, period=self.period, progress=False)
+        period = self.period
+        interval = self.interval
+        
+        # Simple parsing to check limits
+        # Yahoo Finance intraday data limits:
+        # - 1m: 7 days max
+        # - 5m, 15m, 30m: 60 days max  
+        # - 1h: 730 days max (approx 2y)
+        if interval in ['1h', '60m']:
+            # If period implies > 730 days (e.g. '5y', '2y', 'max'), cap it to '2y'
+            # yfinance 1h limit is roughly 730 days
+            if any(x in period for x in ['5y', '10y', 'max']):
+                print(f"[INFO] YFinance limit: {interval} data max 730 days. Using '2y' instead of {period}")
+                period = '2y'
+        elif interval in ['5m', '15m', '30m']:
+            # Max 60 days for these intervals
+            if any(x in period for x in ['1y', '2y', '5y', '10y', 'max', '6mo', '3mo']):
+                print(f"[INFO] YFinance limit: {interval} data max 60 days. Using '60d' instead of {period}")
+                period = '60d'
+        elif interval == '1m':
+            # Max 7 days for 1m
+            if any(x in period for x in ['1y', '2y', '5y', '10y', 'max', '6mo', '3mo', '1mo', '60d', '30d']):
+                print(f"[INFO] YFinance limit: {interval} data max 7 days. Using '7d' instead of {period}")
+                period = '7d'
+        
+        try:
+            # Use Ticker.history which avoids the complex batch downloader (and ImpersonateError)
+            ticker = yf.Ticker(yf_symbol)
+            df = ticker.history(interval=interval, period=period)
+        except Exception as e:
+             print(f"[ERROR] Ticker.history failed: {e}")
+             df = pd.DataFrame()
+
         if df.empty:
             raise ValueError("No data fetched! Check symbol or internet connection.")
         
+        # Handle MultiIndex if present
         if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+            try:
+                # Try to get level 0 if it matches standard columns, or just Flatten
+                df.columns = df.columns.get_level_values(0)
+            except:
+                pass
         
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        # Ensure correct column names (Case sensitive)
+        # yfinance usually returns: Open, High, Low, Close, Volume
+        required = ['Open', 'High', 'Low', 'Close', 'Volume']
+        
+        # Check standard casing
+        if not all(col in df.columns for col in required):
+            # Try lowercase mapping
+            df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+            
+        # Select and Drop NaNs
+        try:
+            df = df[required].dropna()
+        except KeyError as e:
+            # If still missing, verify columns
+            print(f"Columns found: {df.columns}")
+            raise e
+
+        # Handle Empty again after dropna
+        if df.empty:
+             raise ValueError("Data fetched but empty after cleaning.")
+
         os.makedirs(os.path.dirname(self.data_path), exist_ok=True)
         df.to_csv(self.data_path)
-        print(f"Data saved to {self.data_path}")
+        print(f"Data saved to {self.data_path} ({len(df)} rows)")
         return df
 
     def prepare_data_for_lstm(self, df, look_back=60, target_col='Close'):
         """
         Prepare data for LSTM: (Samples, TimeSteps, Features)
-        We will use just the target_col for univariate prediction as per the paper basics,
-        but can extend to multivariate.
-        Paper uses: Xt-1, ... Xt-p (Univariate lags mostly)
         """
         data = df[[target_col]].values
         data_scaled = self.scaler.fit_transform(data)
@@ -105,22 +173,11 @@ class DataLoader:
         X, y = [], []
         for i in range(len(data_scaled) - look_back):
             X.append(data_scaled[i:i + look_back])
+            # y is the NEXT step
             y.append(data_scaled[i + look_back])
             
         X, y = np.array(X), np.array(y)
-        # Reshape X to (samples, time steps, features) which is already correct if X is created as listed
-        # X shape: [samples, look_back, 1]
-        
         return X, y, data_scaled
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
-
-if __name__ == "__main__":
-    # Test
-    loader = DataLoader(period='1mo') # small period for test
-    df = loader.fetch_data(force_download=True)
-    print(df.head())
-    X, y, scaled = loader.prepare_data_for_lstm(df)
-    print("X shape:", X.shape)
-    print("y shape:", y.shape)

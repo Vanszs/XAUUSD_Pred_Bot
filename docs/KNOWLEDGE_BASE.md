@@ -22,7 +22,7 @@ Historical Data → LSTM → Primary Prediction
 
 | Component | File | Description |
 |-----------|------|-------------|
-| Data Loader | `src/data_loader.py` | MT5/YFinance data, OHLCV multivariate support |
+| Data Loader | `src/data_loader.py` | Platform auto-detect (MT5/YFinance), OHLCV multivariate |
 | LSTM Model | `src/lstm_model.py` | 128→64 units, BatchNorm, Early Stopping |
 | ARIMA Model | `src/arima_model.py` | Order (5,1,0) for residual modeling |
 | Hybrid Model | `src/hybrid_model.py` | Orchestrates LSTM + ARIMA |
@@ -43,32 +43,47 @@ Historical Data → LSTM → Primary Prediction
 
 ---
 
-## Data Sources
+## Data Sources (Auto-Detect)
 
-### MetaTrader 5 (Primary)
-- Requires MT5 desktop app running
-- Symbol: `XAUUSD`
-- Timeframes: `1h`, `30m`, `15m`, `4h`, `1d`
+Data source is automatically selected based on platform:
 
-### Yahoo Finance (Fallback)
-- Symbol: `GC=F` (Gold Futures)
-- Auto-fallback if MT5 fails
+| Platform | Data Source | Symbol |
+|----------|-------------|--------|
+| **Windows** | MetaTrader 5 | `XAUUSD` |
+| **Linux/WSL** | Yahoo Finance | `GC=F` (Gold Futures) |
+
+```python
+# src/data_loader.py
+loader.fetch_data(source='auto')  # Auto-detect platform
+```
+
+### Manual Override
+```python
+loader.fetch_data(source='mt5')       # Force MetaTrader5
+loader.fetch_data(source='yfinance')  # Force Yahoo Finance
+```
 
 ---
 
-## GPU Support (Windows Issue)
+## GPU Support
 
-**Problem**: TensorFlow > 2.10 does NOT support native GPU on Windows.
+### Current Setup (WSL2 Ubuntu)
+- **GPU**: NVIDIA RTX 3050 (4GB VRAM)
+- **TensorFlow**: 2.20.0 with CUDA
+- **Status**: ✅ GPU Enabled
 
-**Solutions**:
+### Installation
+```bash
+# In WSL2 Ubuntu
+pip install tensorflow[and-cuda]
+```
 
-| Option | Method | Pros/Cons |
-|--------|--------|-----------|
-| **WSL2** | `pip install tensorflow[and-cuda]` in Ubuntu | Full CUDA support, recommended |
-| **DirectML** | `tensorflow-directml-plugin` | Uses DirectX 12, limited compatibility |
-| **CPU** | Default install | Slow but works |
-
-**Current Status**: Running on CPU (TensorFlow 2.20.0)
+### Verify GPU
+```python
+import tensorflow as tf
+print(tf.config.list_physical_devices('GPU'))
+# [PhysicalDevice(name='/physical_device:GPU:0', device_type='GPU')]
+```
 
 ---
 
@@ -83,9 +98,9 @@ With 5y data, 1h timeframe, 10 epochs:
 
 ## Known Issues
 
-1. **Future prediction too smooth**: Recursive LSTM accumulates errors, causing unrealistic declining curves
-2. **Windows GPU**: Requires WSL2 for proper CUDA support
-3. **IPython kernel cache**: After code changes, must restart kernel
+1. **Future prediction too smooth**: Recursive LSTM accumulates errors
+2. **MT5 on Linux**: Not supported - use Yahoo Finance fallback
+3. **IPython kernel cache**: After code changes, restart kernel
 
 ---
 
@@ -93,13 +108,14 @@ With 5y data, 1h timeframe, 10 epochs:
 
 ```
 XAUUSD_Pred_Bot/
-├── analysis.ipynb     # Interactive notebook
+├── analysis.ipynb     # Interactive notebook (7 sections)
 ├── main.py            # CLI interface
 ├── requirements.txt   # Dependencies
 ├── .gitignore         # Excludes venv, data, plots
+├── .python-version    # pyenv local (3.11.9)
 ├── src/
 │   ├── __init__.py
-│   ├── data_loader.py
+│   ├── data_loader.py # Platform auto-detect
 │   ├── lstm_model.py
 │   ├── arima_model.py
 │   ├── hybrid_model.py
@@ -114,15 +130,22 @@ XAUUSD_Pred_Bot/
 
 ## Usage
 
-### CLI
-```powershell
+### Activate Environment
+```bash
+# Linux/WSL
+source venv/bin/activate
+
+# Windows
 .\venv\Scripts\activate
+```
+
+### CLI
+```bash
 python main.py --mode train --interval 1h --epochs 50 --days 5
 ```
 
 ### Notebook
-```powershell
-.\venv\Scripts\activate
+```bash
 jupyter notebook analysis.ipynb
 # Select kernel: "Python (XAUUSD Venv)"
 ```
@@ -131,12 +154,12 @@ jupyter notebook analysis.ipynb
 
 ## Dependencies
 
-- tensorflow (2.20.0 CPU / needs WSL2 for GPU)
+- tensorflow 2.20.0 (with CUDA on WSL2)
 - numpy, pandas
 - scikit-learn (MinMaxScaler)
 - statsmodels (ARIMA)
 - matplotlib
-- MetaTrader5
+- MetaTrader5 (Windows only)
 - yfinance
 - ipykernel, notebook
 
@@ -145,4 +168,4 @@ jupyter notebook analysis.ipynb
 ## Reference
 
 Based on: "Improved Gold Price Prediction Based on the LSTM-ARIMA Hybrid Model" (CONF-MLA 2025)
-- PDF located in: `docs/9a35a69227a649c6a1124bba1ea8d6fb.marked_uJoACAb.pdf`
+- PDF: `docs/9a35a69227a649c6a1124bba1ea8d6fb.marked_uJoACAb.pdf`
