@@ -11,8 +11,6 @@ class DataLoader:
         self.period = period
         self.data_path = data_path
         self.scaler = MinMaxScaler(feature_range=(0, 1))
-        self.feature_scaler = MinMaxScaler(feature_range=(0, 1))  # For multivariate
-        self.close_scaler = MinMaxScaler(feature_range=(0, 1))    # For Close column only (inverse transform)
 
     def fetch_data(self, force_download=False, source='mt5'):
         """
@@ -97,7 +95,9 @@ class DataLoader:
     def prepare_data_for_lstm(self, df, look_back=60, target_col='Close'):
         """
         Prepare data for LSTM: (Samples, TimeSteps, Features)
-        Univariate version - uses only Close price.
+        We will use just the target_col for univariate prediction as per the paper basics,
+        but can extend to multivariate.
+        Paper uses: Xt-1, ... Xt-p (Univariate lags mostly)
         """
         data = df[[target_col]].values
         data_scaled = self.scaler.fit_transform(data)
@@ -108,51 +108,19 @@ class DataLoader:
             y.append(data_scaled[i + look_back])
             
         X, y = np.array(X), np.array(y)
-        return X, y, data_scaled
-
-    def prepare_data_for_lstm_multivariate(self, df, look_back=60, target_col='Close'):
-        """
-        Prepare OHLCV multi-feature data for LSTM.
-        Returns:
-            X: (Samples, TimeSteps, 5) - Using Open, High, Low, Close, Volume
-            y: (Samples, 1) - Target is Close price (scaled separately for inverse transform)
-            scaled_data: Full scaled dataset
-        """
-        features = ['Open', 'High', 'Low', 'Close', 'Volume']
-        data = df[features].values
+        # Reshape X to (samples, time steps, features) which is already correct if X is created as listed
+        # X shape: [samples, look_back, 1]
         
-        # Scale all features together
-        data_scaled = self.feature_scaler.fit_transform(data)
-        
-        # Also fit the close scaler for inverse transform later
-        self.close_scaler.fit(df[['Close']].values)
-        
-        X, y = [], []
-        close_idx = features.index('Close')  # Index of Close column
-        
-        for i in range(len(data_scaled) - look_back):
-            X.append(data_scaled[i:i + look_back])
-            y.append(data_scaled[i + look_back, close_idx])  # Target is Close
-            
-        X, y = np.array(X), np.array(y).reshape(-1, 1)
         return X, y, data_scaled
 
     def inverse_transform(self, data):
-        """Inverse transform for univariate (Close only)"""
         return self.scaler.inverse_transform(data)
-    
-    def inverse_transform_close(self, data):
-        """Inverse transform for multivariate mode (Close column)"""
-        return self.close_scaler.inverse_transform(data)
 
 if __name__ == "__main__":
     # Test
-    loader = DataLoader(period='1mo')  # small period for test
-    df = loader.fetch_data(force_download=True, source='yfinance')
+    loader = DataLoader(period='1mo') # small period for test
+    df = loader.fetch_data(force_download=True)
     print(df.head())
-    
-    # Test multivariate
-    X, y, scaled = loader.prepare_data_for_lstm_multivariate(df)
-    print("X shape (multivariate):", X.shape)  # Should be (samples, look_back, 5)
+    X, y, scaled = loader.prepare_data_for_lstm(df)
+    print("X shape:", X.shape)
     print("y shape:", y.shape)
-
